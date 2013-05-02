@@ -1,0 +1,42 @@
+{
+    "name": "components/thorax",
+    "description": "An opinionated, battle-tested Backbone + Handlebars framework to build large scale web applications.",
+    "homepage": "http://thoraxjs.org/",
+    "type": "component",
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "Walmart Labs",
+            "homepage": "http://walmartlabs.com"
+        }
+    ],
+    "support": {
+        "issues": "https://github.com/walmartlabs/thorax/issues",
+        "source": "https://github.com/walmartlabs/thorax"
+    },
+    "require": {
+        "components/jquery": "*",
+        "components/zepto": "*",
+        "components/handlebars.js" : "*",
+        "components/underscore": "*",
+        "components/backbone": "*"
+    },
+    "extra": {
+        "component": {
+            "scripts": [
+                "thorax.js",
+                "thorax-mobile.js"
+            ],
+            "shim": {
+                "exports": "Reveal",
+                "deps": [
+                    "jquery",
+                    "zepto",
+                    "handlebars",
+                    "underscore",
+                    "backbone"
+                ]
+            }
+        }
+    }
+}
