@@ -15,11 +15,17 @@
         "source": "https://github.com/walmartlabs/thorax"
     },
     "require": {
-        "components/jquery": "*",
-        "components/zepto": "*",
         "components/handlebars.js" : "*",
         "components/underscore": "*",
         "components/backbone": "*"
+    },
+    "suggest": {
+        "components/jquery": "Requires either jQuery or Zepto",
+        "components/zepto": "Requires either jQuery or Zepto"
+    },
+    "require": {
+        "components/jquery" : "*",
+        "components/zepto": "*"
     },
     "extra": {
         "component": {
@@ -30,8 +36,6 @@
             "shim": {
                 "exports": "Reveal",
                 "deps": [
-                    "jquery",
-                    "zepto",
                     "handlebars",
                     "underscore",
                     "backbone"
