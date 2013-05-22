@@ -46,7 +46,7 @@ if (!Handlebars.templates) {
 }
 
 var Thorax = this.Thorax = {
-  VERSION: '2.0.0rc4',
+  VERSION: '2.0.0rc6',
   templatePathPrefix: '',
   //view classes
   Views: {},
