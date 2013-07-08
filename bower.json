@@ -1,15 +1,15 @@
 {
   "name": "thorax",
-  "version": "2.0.0rc6",
+  "version": "2.0.0rc10",
   "main": [
     "thorax.js",
     "thorax-mobile.js"
   ],
   "dependencies": {
-    "jquery": "~1.9",
-    "zepto": "~1.0",
-    "handlebars" : "1.0.0-rc.4",
-    "underscore": "~1.4",
-    "backbone": "0.9.9"
+    "jquery": "1.9.0",
+    "zepto": "1.0.0",
+    "handlebars" : "1.0.0",
+    "underscore": "1.4.4",
+    "backbone": "1.0.0"
   }
 }
