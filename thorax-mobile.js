@@ -23,7 +23,7 @@ DEALINGS IN THE SOFTWARE.
 ;;
 (function() {
 
-/*global cloneInheritVars, createInheritVars, createRegistryWrapper, getValue, inheritVars */
+/*global cloneInheritVars, createInheritVars, resetInheritVars, createRegistryWrapper, getValue, inheritVars */
 
 //support zepto.forEach on jQuery
 if (!$.fn.forEach) {
@@ -46,7 +46,7 @@ if (!Handlebars.templates) {
 }
 
 var Thorax = this.Thorax = {
-  VERSION: '2.0.0rc6',
+  VERSION: '2.0.0rc8',
   templatePathPrefix: '',
   //view classes
   Views: {},
@@ -59,7 +59,7 @@ var Thorax = this.Thorax = {
     throw err;
   },
   //deprecated, here to ensure existing projects aren't mucked with
-  templates: Handlebars.templates 
+  templates: Handlebars.templates
 };
 
 Thorax.View = Backbone.View.extend({
@@ -99,6 +99,8 @@ Thorax.View = Backbone.View.extend({
         obj.configure.call(this);
       }
     }, this);
+
+    this.trigger('configure');
   },
 
   setElement : function() {
@@ -174,9 +176,10 @@ Thorax.View = Backbone.View.extend({
     });
     this.children = children;
 
+    this.trigger('before:rendered');
     this._rendering = true;
 
-    try{
+    try {
       if (_.isUndefined(output) || (!_.isElement(output) && !Thorax.Util.is$(output) && !(output && output.el) && !_.isString(output) && !_.isFunction(output))) {
         // try one more time to assign the template, if we don't
         // yet have one we must raise
@@ -187,21 +190,23 @@ Thorax.View = Backbone.View.extend({
       } else if (_.isFunction(output)) {
         output = this.renderTemplate(output);
       }
+
+      // Destroy any helpers that may be lingering
+      _.each(this._previousHelpers, function(child) {
+        child.destroy();
+        child.parent = undefined;
+      });
+      this._previousHelpers = undefined;
+
+      //accept a view, string, Handlebars.SafeString or DOM element
+      this.html((output && output.el) || (output && output.string) || output);
+
+      ++this._renderCount;
+      this.trigger('rendered');
     } finally {
       this._rendering = false;
     }
 
-    // Destroy any helpers that may be lingering
-    _.each(this._previousHelpers, function(child) {
-      child.destroy();
-      child.parent = undefined;
-    });
-    this._previousHelpers = undefined;
-
-    //accept a view, string, Handlebars.SafeString or DOM element
-    this.html((output && output.el) || (output && output.string) || output);
-    ++this._renderCount;
-    this.trigger('rendered');
     return output;
   },
 
@@ -373,6 +378,25 @@ function registryGet(object, type, name, ignoreErrors) {
   }
 }
 
+function assignView(attributeName, options) {
+  var ViewClass;
+  // if attribute is the name of view to fetch
+  if (_.isString(this[attributeName])) {
+    ViewClass = Thorax.Util.getViewClass(this[attributeName], true);
+  // else try and fetch the view based on the name
+  } else if (this.name && !_.isFunction(this[attributeName])) {
+    ViewClass = Thorax.Util.getViewClass(this.name + (options.extension || ''), true);
+  }
+  // if we found something, assign it
+  if (ViewClass && !_.isFunction(this[attributeName])) {
+    this[attributeName] = ViewClass;
+  }
+  // if nothing was found and it's required, throw
+  if (options.required && !_.isFunction(this[attributeName])) {
+    throw new Error('View ' + (this.name || this.cid) + ' requires: ' + attributeName);
+  }
+}
+
 function assignTemplate(attributeName, options) {
   var template;
   // if attribute is the name of template to fetch
@@ -456,19 +480,56 @@ function objectEvents(target, eventName, callback, context) {
   if (_.isObject(callback)) {
     var spec = inheritVars[eventName];
     if (spec && spec.event) {
-      addEvents(target['_' + eventName + 'Events'], callback, context);
+      if (target && target.listenTo && target[eventName] && target[eventName].cid) {
+        addEvents(target, callback, context, eventName);
+      } else {
+        addEvents(target['_' + eventName + 'Events'], callback, context);
+      }
       return true;
     }
   }
 }
-function addEvents(target, source, context) {
+// internal listenTo function will error on destroyed
+// race condition
+function listenTo(object, target, eventName, callback, context) {
+  // getEventCallback will resolve if it is a string or a method
+  // and return a method
+  var callbackMethod = getEventCallback(callback, object),
+      destroyedCount = 0;
+
+  function eventHandler() {
+    if (object.el) {
+      callbackMethod.apply(context, arguments);
+    } else {
+      // If our event handler is removed by destroy while another event is processing then we
+      // we might see one latent event percolate through due to caching in the event loop. If we
+      // see multiple events this is a concern and a sign that something was not cleaned properly.
+      if (destroyedCount) {
+        throw new Error('destroyed-event:' + object.name + ':' + eventName);
+      }
+      destroyedCount++;
+    }
+  }
+  eventHandler._callback = callbackMethod;
+  object.listenTo(target, eventName, eventHandler);
+}
+
+function addEvents(target, source, context, listenToObject) {
+  function addEvent(callback, eventName) {
+    if (listenToObject) {
+      listenTo(target, target[listenToObject], eventName, callback, context || target);
+    } else {
+      target.push([eventName, callback, context]);
+    }
+  }
+
   _.each(source, function(callback, eventName) {
     if (_.isArray(callback)) {
       _.each(callback, function(cb) {
-        target.push([eventName, cb, context]);
+        addEvent(cb, eventName);
       });
     } else {
-      target.push([eventName, callback, context]);
+      addEvent(callback, eventName);
     }
   });
 }
@@ -479,10 +540,6 @@ function getOptionsData(options) {
   }
   return options.data;
 }
-
-// These whitelisted attributes will be the only ones passed
-// from the options hash to Thorax.Util.tag
-var htmlAttributesToCopy = ['id', 'className', 'tagName'];
 
 // In helpers "tagName" or "tag" may be specified, as well
 // as "class" or "className". Normalize to "tagName" and
@@ -503,14 +560,17 @@ function normalizeHTMLAttributeOptions(options) {
 
 Thorax.Util = {
   getViewInstance: function(name, attributes) {
-    attributes = attributes || {};
+    var ViewClass = Thorax.Util.getViewClass(name, true);
+    return ViewClass ? new ViewClass(attributes || {}) : name;
+  },
+
+  getViewClass: function(name, ignoreErrors) {
     if (_.isString(name)) {
-      var Klass = registryGet(Thorax, 'Views', name, false);
-      return Klass.cid ? _.extend(Klass, attributes || {}) : new Klass(attributes);
+      return registryGet(Thorax, 'Views', name, ignoreErrors);
     } else if (_.isFunction(name)) {
-      return new name(attributes);
-    } else {
       return name;
+    } else {
+      return false;
     }
   },
 
@@ -600,46 +660,29 @@ Thorax.Util = {
 };
 
 ;;
-/*global createInheritVars, inheritVars */
 Thorax.Mixins = {};
 
-inheritVars.mixins = {
-  name: 'mixins',
-  configure: function() {
-    _.each(this.constructor.mixins, this.mixin, this);
-    _.each(this.mixins, this.mixin, this);
-  }
-};
-
 _.extend(Thorax.View, {
-  mixin: function(mixin) {
-    createInheritVars(this);
-    this.mixins.push(mixin);
+  mixin: function(name) {
+    Thorax.Mixins[name](this);
   },
   registerMixin: function(name, callback, methods) {
-    Thorax.Mixins[name] = [callback, methods];
+    Thorax.Mixins[name] = function(obj) {
+      var isInstance = !!obj.cid;
+      if (methods) {
+        _.extend(isInstance ? obj : obj.prototype, methods);
+      }
+      if (isInstance) {
+        callback.call(obj);
+      } else {
+        obj.on('configure', callback);
+      }
+    };
   }
 });
 
 Thorax.View.prototype.mixin = function(name) {
-  if (!this._appliedMixins) {
-    this._appliedMixins = [];
-  }
-  if (_.indexOf(this._appliedMixins, name) === -1) {
-    this._appliedMixins.push(name);
-    if (_.isFunction(name)) {
-      name.call(this);
-    } else {
-      var mixin = Thorax.Mixins[name];
-      _.extend(this, mixin[1]);
-      //mixin callback may be an array of [callback, arguments]
-      if (_.isArray(mixin[0])) {
-        mixin[0][0].apply(this, mixin[0][1]);
-      } else {
-        mixin[0].apply(this, _.toArray(arguments).slice(1));
-      }
-    }
-  }
+  Thorax.Mixins[name](this);
 };
 
 ;;
@@ -705,7 +748,7 @@ _.extend(Thorax.View.prototype, {
       //accept on("click a", callback, context)
       _.each((_.isArray(callback) ? callback : [callback]), function(callback) {
         var params = eventParamsFromEventItem.call(this, eventName, callback, context || this);
-        if (params.type === 'DOM') {
+        if (params.type === 'DOM' && !this.$el) {
           //will call _addEvent during delegateEvents()
           if (!this._eventsToDelegate) {
             this._eventsToDelegate = [];
@@ -765,7 +808,7 @@ Thorax.View.on('ready', function(options) {
   if (!this._isReady) {
     this._isReady = true;
     function triggerReadyOnChild(child) {
-      child.trigger('ready', options);
+      child._isReady || child.trigger('ready', options);
     }
     _.each(this.children, triggerReadyOnChild);
     this.on('child', triggerReadyOnChild);
@@ -842,7 +885,7 @@ function eventParamsFromEventItem(name, handler, context) {
 }
 
 ;;
-/*global getOptionsData, htmlAttributesToCopy, normalizeHTMLAttributeOptions, viewHelperAttributeName */
+/*global getOptionsData, normalizeHTMLAttributeOptions, viewHelperAttributeName */
 var viewPlaceholderAttributeName = 'data-view-tmp',
     viewTemplateOverrides = {};
 
@@ -879,13 +922,23 @@ Handlebars.registerViewHelper = function(name, ViewClass, callback) {
       ViewClass = Thorax.HelperView;
     }
   }
+
+  var viewOptionWhiteList = ViewClass.attributeWhiteList;
+
   Handlebars.registerHelper(name, function() {
     var args = _.toArray(arguments),
         options = args.pop(),
-        declaringView = getOptionsData(options).view;
+        declaringView = getOptionsData(options).view,
+        expandTokens = options.hash['expand-tokens'];
+
+    if (expandTokens) {
+      delete options.hash['expand-tokens'];
+      _.each(options.hash, function(value, key) {
+        options.hash[key] = Thorax.Util.expandToken(value, this);
+      }, this);
+    }
 
     var viewOptions = {
-      template: options.fn || Handlebars.VM.noop,
       inverse: options.inverse,
       options: options.hash,
       declaringView: declaringView,
@@ -897,8 +950,43 @@ Handlebars.registerViewHelper = function(name, ViewClass, callback) {
       }
     };
 
+
     normalizeHTMLAttributeOptions(options.hash);
-    _.extend(viewOptions, _.pick(options.hash, htmlAttributesToCopy));
+    var htmlAttributes = _.clone(options.hash);
+    if (viewOptionWhiteList) {
+      _.each(viewOptionWhiteList, function(dest, source) {
+        delete htmlAttributes[source];
+        if (!_.isUndefined(options.hash[source])) {
+          viewOptions[dest] = options.hash[source];
+        }
+      });
+    }
+    if(htmlAttributes.tagName) {
+      viewOptions.tagName = htmlAttributes.tagName;
+    }
+    viewOptions.attributes = function() {
+      var attrs = (ViewClass.prototype && ViewClass.prototype.attributes) || {};
+      if (_.isFunction(attrs)) {
+        attrs = attrs.apply(this, arguments);
+      }
+      _.extend(attrs, _.omit(htmlAttributes, ['tagName']));
+      // backbone wants "class"
+      if (attrs.className) {
+        attrs['class'] = attrs.className;
+        delete attrs.className;
+      }
+      return attrs;
+    };
+
+    if (options.fn) {
+      // Only assign if present, allow helper view class to
+      // declare template
+      viewOptions.template = options.fn;
+    } else if (ViewClass && ViewClass.prototype && !ViewClass.prototype.template) {
+      // ViewClass may also be an instance or object with factory method
+      // so need to do this check
+      viewOptions.template = Handlebars.VM.noop;
+    }
 
     // Check to see if we have an existing instance that we can reuse
     var instance = _.find(declaringView._previousHelpers, function(child) {
@@ -930,10 +1018,8 @@ Handlebars.registerViewHelper = function(name, ViewClass, callback) {
       declaringView.children[instance.cid] = instance;
     }
 
-    var htmlAttributes = _.pick(options.hash, htmlAttributesToCopy);
     htmlAttributes[viewPlaceholderAttributeName] = instance.cid;
 
-    var expandTokens = options.hash['expand-tokens'];
     return new Handlebars.SafeString(Thorax.Util.tag(htmlAttributes, '', expandTokens ? this : null));
   });
   var helper = Handlebars.helpers[name];
@@ -1117,27 +1203,7 @@ _.extend(Thorax.View.prototype, {
 function bindEvents(type, target, source) {
   var context = this;
   walkInheritTree(source, '_' + type + 'Events', true, function(event) {
-    // getEventCallback will resolve if it is a string or a method
-    // and return a method
-    var callback = getEventCallback(event[1], context),
-        eventContext = event[2] || context,
-        destroyedCount = 0;
-
-    function eventHandler() {
-      if (context.el) {
-        callback.apply(eventContext, arguments);
-      } else {
-        // If our event handler is removed by destroy while another event is processing then we
-        // we might see one latent event percolate through due to caching in the event loop. If we
-        // see multiple events this is a concern and a sign that something was not cleaned properly.
-        if (destroyedCount) {
-          throw new Error('destroyed-event:' + context.name + ':' + event[0]);
-        }
-        destroyedCount++;
-      }
-    }
-    eventHandler._callback = callback;
-    context.listenTo(target, event[0], eventHandler);
+    listenTo(context, target, event[0], event[1], event[2] || context);
   });
 }
 
@@ -1202,7 +1268,7 @@ dataObject('model', {
     render: undefined,    // Default to deferred rendering
     fetch: true,
     success: false,
-    errors: true
+    invalid: true
   },
   change: onModelChange,
   $el: '$el',
@@ -1217,13 +1283,17 @@ function onModelChange(model) {
 
 Thorax.View.on({
   model: {
-    error: function(model, errors) {
-      if (this._objectOptionsByCid[model.cid].errors) {
-        this.trigger('error', errors, model);
+    invalid: function(model, errors) {
+      if (this._objectOptionsByCid[model.cid].invalid) {
+        this.trigger('invalid', errors, model);
       }
     },
+    error: function(model, resp, options) {
+      this.trigger('error', resp, model);
+    },
     change: function(model) {
-      onModelChange.call(this, model);
+      // Indirect refernece to allow for overrides
+      inheritVars.model.change.call(this, model);
     }
   }
 });
@@ -1299,7 +1369,7 @@ dataObject('collection', {
     render: undefined,    // Default to deferred rendering
     fetch: true,
     success: false,
-    errors: true
+    invalid: true
   },
   change: onCollectionReset,
   $el: 'getCollectionElement',
@@ -1444,6 +1514,11 @@ Thorax.CollectionView = Thorax.View.extend({
   },
   emptyClass: 'empty',
   renderEmpty: function() {
+    if (!this.emptyView) {
+      assignView.call(this, 'emptyView', {
+        extension: '-empty'
+      });
+    }
     if (!this.emptyTemplate && !this.emptyView) {
       assignTemplate.call(this, 'emptyTemplate', {
         extension: '-empty',
@@ -1463,6 +1538,12 @@ Thorax.CollectionView = Thorax.View.extend({
     }
   },
   renderItem: function(model, i) {
+    if (!this.itemView) {
+      assignView.call(this, 'itemView', {
+        extension: '-item',
+        required: false
+      });
+    }
     if (!this.itemTemplate && !this.itemView) {
       assignTemplate.call(this, 'itemTemplate', {
         extension: '-item',
@@ -1531,10 +1612,13 @@ Thorax.CollectionView.on({
 
 Thorax.View.on({
   collection: {
-    error: function(collection, message) {
-      if (this._objectOptionsByCid[collection.cid].errors) {
-        this.trigger('error', message, collection);
+    invalid: function(collection, message) {
+      if (this._objectOptionsByCid[collection.cid].invalid) {
+        this.trigger('invalid', message, collection);
       }
+    },
+    error: function(collection, resp, options) {
+      this.trigger('error', resp, collection);
     }
   }
 });
@@ -1672,7 +1756,7 @@ _.extend(Thorax.View.prototype, {
       }
     });
 
-    this.trigger('serialize', attributes, options);
+    this._populating || this.trigger('serialize', attributes, options);
 
     if (options.validate) {
       var validateInputErrors = this.validateInput(attributes);
@@ -1681,7 +1765,7 @@ _.extend(Thorax.View.prototype, {
       }
       this.trigger('validate', attributes, errors, options);
       if (errors.length) {
-        this.trigger('error', errors);
+        this.trigger('invalid', errors);
         return;
       }
     }
@@ -1743,7 +1827,8 @@ _.extend(Thorax.View.prototype, {
       });
     });
 
-    this.trigger('populate', attributes);
+    ++this._populateCount;
+    this._populating || this.trigger('populate', attributes);
   },
 
   //perform form validation, implemented by child class
@@ -1765,26 +1850,70 @@ _.extend(Thorax.View.prototype, {
     } else {
       return input.value;
     }
+  },
+
+  _populateCount: 0
+});
+
+// Keeping state in the views
+Thorax.View.on({
+  'before:rendered': function() {
+    if (!this._renderCount) { return; }
+
+    var modelOptions = this.model && this._objectOptionsByCid[this.model.cid];
+    this._populating = true;
+    // When we have previously populated and rendered the view, reuse the user data
+    this.previousFormData = filterObject(
+      this.serialize(_.extend({ set: false, validate: false }, modelOptions)),
+      function(value) { return value !== '' && value != null; }
+    );
+  },
+  rendered: function() {
+    var modelOptions = this.model && this._objectOptionsByCid[this.model.cid],
+        populate = modelOptions && modelOptions.populate || null,
+        context;
+    if (this.previousFormData) {
+      context = this._populateCount ? this._getContext() : {};
+      // Using jQuery/Zepto to extend objects since we need deep extends
+      this.populate($.extend(true, context, this.previousFormData), populate);
+    }
+    this._populating = false;
+    this.previousFormData = null;
   }
 });
+
+function filterObject(object, callback) {
+  _.each(object, function (value, key) {
+    if (_.isObject(value)) {
+      return filterObject(value, callback);
+    }
+    callback(value, key, object) === false && delete object[key];
+  });
+  return object;
+}
 
 Thorax.View.on({
-  error: function() {
-    resetSubmitState.call(this);
-
-    // If we errored with a model we want to reset the content but leave the UI
-    // intact. If the user updates the data and serializes any overwritten data
-    // will be restored.
-    if (this.model && this.model.previousAttributes) {
-      this.model.set(this.model.previousAttributes(), {
-        silent: true
-      });
-    }
-  },
+  invalid: onErrorOrInvalidData,
+  error: onErrorOrInvalidData,
   deactivated: function() {
-    resetSubmitState.call(this);
+    if (this.$el) {
+      resetSubmitState.call(this);
+    }
   }
 });
+
+function onErrorOrInvalidData () {
+  resetSubmitState.call(this);
+
+  // If we errored with a model we want to reset the content but leave the UI
+  // intact. If the user updates the data and serializes any overwritten data
+  // will be restored.
+  if (this.model && this.model.previousAttributes) {
+    this.model.set(this.model.previousAttributes(), {
+      silent: true
+    });
+  }
+}
 
 function eachNamedInput(options, iterator, context) {
   var i = 0,
@@ -1830,6 +1959,7 @@ function resetSubmitState() {
 }
 
 ;;
+/*global getOptionsData, normalizeHTMLAttributeOptions*/
 var layoutCidAttributeName = 'data-layout-cid';
 
 Thorax.LayoutView = Thorax.View.extend({
@@ -1876,9 +2006,9 @@ Thorax.LayoutView = Thorax.View.extend({
     if (view) {
       triggerLifecycleEvent.call(this, 'activated', options);
       view.trigger('activated', options);
-      this._addChild(view);
       this._view = view;
       this._view.appendTo(getLayoutViewsTargetElement.call(this));
+      this._addChild(view);
     } else {
       this._view = undefined;
     }
@@ -1929,47 +2059,6 @@ function getLayoutViewsTargetElement() {
 }
 
 ;;
-/*global createRegistryWrapper */
-
-//Router
-function initializeRouter() {
-  Backbone.history || (Backbone.history = new Backbone.History());
-  Backbone.history.on('route', onRoute, this);
-  //router does not have a built in destroy event
-  //but ViewController does
-  this.on('destroyed', function() {
-    Backbone.history.off('route', onRoute, this);
-  });
-}
-
-Thorax.Router = Backbone.Router.extend({
-  constructor: function() {
-    var response = Thorax.Router.__super__.constructor.apply(this, arguments);
-    initializeRouter.call(this);
-    return response;
-  },
-  route: function(route, name, callback) {
-    if (!callback) {
-      callback = this[name];
-    }
-    //add a route:before event that is fired before the callback is called
-    return Backbone.Router.prototype.route.call(this, route, name, function() {
-      this.trigger.apply(this, ['route:before', route, name].concat(Array.prototype.slice.call(arguments)));
-      return callback.apply(this, arguments);
-    });
-  }
-});
-
-Thorax.Routers = {};
-createRegistryWrapper(Thorax.Router, Thorax.Routers);
-
-function onRoute(router /* , name */) {
-  if (this === router) {
-    this.trigger.apply(this, ['route'].concat(Array.prototype.slice.call(arguments, 1)));
-  }
-}
-
-;;
 Thorax.CollectionHelperView = Thorax.CollectionView.extend({
   // Forward render events to the parent
   events: {
@@ -1978,16 +2067,22 @@ Thorax.CollectionHelperView = Thorax.CollectionView.extend({
     'rendered:empty': forwardRenderEvent('rendered:empty')
   },
 
+  // Thorax.CollectionView allows a collectionSelector
+  // to be specified, disallow in a collection helper
+  // as it will cause problems when neseted
+  getCollectionElement: function() {
+    return this.$el;
+  },
+
   constructor: function(options) {
-    _.each(collectionOptionNames, function(viewAttributeName, helperOptionName) {
-      if (options.options[helperOptionName]) {
-        var value = options.options[helperOptionName];
-        if (viewAttributeName === 'itemTemplate' || viewAttributeName === 'emptyTemplate') {
-          value = Thorax.Util.getTemplate(value);
-        }
-        options[viewAttributeName] = value;
-      }
-    });
+    // need to fetch templates if template name was passed
+    if (options.options['item-template']) {
+      options.itemTemplate = Thorax.Util.getTemplate(options.options['item-template']);
+    }
+    if (options.options['empty-template']) {
+      options.emptyTemplate = Thorax.Util.getTemplate(options.options['empty-template']);
+    }
+
     // Handlebars.VM.noop is passed in the handlebars options object as
     // a default for fn and inverse, if a block was present. Need to
     // check to ensure we don't pick the empty / null block up.
@@ -1999,12 +2094,35 @@ Thorax.CollectionHelperView = Thorax.CollectionView.extend({
       options.emptyTemplate = options.inverse;
       options.inverse = Handlebars.VM.noop;
     }
+
+    var shouldBindItemContext = _.isFunction(options.itemContext),
+        shouldBindItemFilter = _.isFunction(options.itemFilter);
+
     var response = Thorax.HelperView.call(this, options);
+    
+    if (shouldBindItemContext) {
+      this.itemContext = _.bind(this.itemContext, this.parent);
+    } else if (_.isString(this.itemContext)) {
+      this.itemContext = _.bind(this.parent[this.itemContext], this.parent);
+    }
+
+    if (shouldBindItemFilter) {
+      this.itemFilter = _.bind(this.itemFilter, this.parent);
+    } else if (_.isString(this.itemFilter)) {
+      this.itemFilter = _.bind(this.parent[this.itemFilter], this.parent);
+    }
+
     if (this.parent.name) {
-      if (!this.emptyTemplate) {
+      if (!this.emptyView && !this.parent.renderEmpty) {
+        this.emptyView = Thorax.Util.getViewClass(this.parent.name + '-empty', true);
+      }
+      if (!this.emptyTemplate && !this.parent.renderEmpty) {
         this.emptyTemplate = Thorax.Util.getTemplate(this.parent.name + '-empty', true);
       }
-      if (!this.itemTemplate) {
+      if (!this.itemView && !this.parent.renderItem) {
+        this.itemView = Thorax.Util.getViewClass(this.parent.name + '-item', true);
+      }
+      if (!this.itemTemplate && !this.parent.renderItem) {
         // item template must be present if an itemView is not
         this.itemTemplate = Thorax.Util.getTemplate(this.parent.name + '-item', !!this.itemView);
       }
@@ -2019,7 +2137,7 @@ Thorax.CollectionHelperView = Thorax.CollectionView.extend({
 
     var self = this;
     _.each(['itemFilter', 'itemContext', 'renderItem', 'renderEmpty'], function(propertyName) {
-      if (self.parent[propertyName] && !this[propertyName]) {
+      if (self.parent[propertyName]) {
         self[propertyName] = function() {
           return self.parent[propertyName].apply(self.parent, arguments);
         };
@@ -2030,7 +2148,10 @@ Thorax.CollectionHelperView = Thorax.CollectionView.extend({
 
 _.extend(Thorax.CollectionHelperView.prototype, helperViewPrototype);
 
-var collectionOptionNames = {
+
+Thorax.CollectionHelperView.attributeWhiteList = {
+  'item-context': 'itemContext',
+  'item-filter': 'itemFilter',
   'item-template': 'itemTemplate',
   'empty-template': 'emptyTemplate',
   'item-view': 'itemView',
@@ -2228,14 +2349,14 @@ Handlebars.registerHelper('link', function() {
 var clickSelector = '[' + callMethodAttributeName + '], [' + triggerEventAttributeName + ']';
 
 function handleClick(event) {
-  var target = $(event.target),
-      view = target.view({helper: false}),
-      methodName = target.attr(callMethodAttributeName),
-      eventName = target.attr(triggerEventAttributeName),
+  var $this = $(this),
+      view = $this.view({helper: false}),
+      methodName = $this.attr(callMethodAttributeName),
+      eventName = $this.attr(triggerEventAttributeName),
       methodResponse = false;
   methodName && (methodResponse = view[methodName].call(view, event));
   eventName && view.trigger(eventName, event);
-  target.tagName === "A" && methodResponse === false && event.preventDefault();
+  this.tagName === 'A' && methodResponse === false && event.preventDefault();
 }
 
 var lastClickHandlerEventName;
@@ -2262,12 +2383,11 @@ var elementPlaceholderAttributeName = 'data-element-tmp';
 Handlebars.registerHelper('element', function(element, options) {
   normalizeHTMLAttributeOptions(options.hash);
   var cid = _.uniqueId('element'),
-      declaringView = getOptionsData(options).view,
-      htmlAttributes = _.pick(options.hash, htmlAttributesToCopy);
-  htmlAttributes[elementPlaceholderAttributeName] = cid;
+      declaringView = getOptionsData(options).view;
+  options.hash[elementPlaceholderAttributeName] = cid;
   declaringView._elementsByCid || (declaringView._elementsByCid = {});
   declaringView._elementsByCid[cid] = element;
-  return new Handlebars.SafeString(Thorax.Util.tag(htmlAttributes));
+  return new Handlebars.SafeString(Thorax.Util.tag(options.hash));
 });
 
 Thorax.View.on('append', function(scope, callback) {
@@ -2604,6 +2724,13 @@ function fetchQueue(options, $super) {
     // WARN: Should ensure that loaders are protected from out of band data
     //    when using this option
     this.fetchQueue = undefined;
+  } else if (this.fetchQueue) {
+    // concurrent set/reset fetch events are not advised
+    var reset = (this.fetchQueue[0] || {}).reset;
+    if (reset !== options.reset) {
+      // fetch with concurrent set & reset not allowed
+      throw new Error('mixed-fetch');
+    }
   }
 
   if (!this.fetchQueue) {
@@ -2658,6 +2785,12 @@ _.each(klasses, function(DataClass) {
 
     fetch: function(options) {
       options = options || {};
+      if (DataClass === Thorax.Collection) {
+        if (!_.find(['reset', 'remove', 'add', 'update'], function(key) { return !_.isUndefined(options[key]); })) {
+          // use backbone < 1.0 behavior to allow triggering of reset events
+          options.reset = true;
+        }
+      }
 
       var self = this,
           complete = options.complete;
@@ -2689,10 +2822,6 @@ _.each(klasses, function(DataClass) {
 });
 
 Thorax.Util.bindToRoute = bindToRoute;
-
-if (Thorax.Router) {
-  Thorax.Router.bindToRoute = Thorax.Router.prototype.bindToRoute = bindToRoute;
-}
 
 // Propagates loading view parameters to the AJAX layer
 Thorax.View.prototype._modifyDataObjectOptions = function(dataObject, options) {
@@ -2747,10 +2876,12 @@ inheritVars.collection.loading = function() {
   }
 };
 
-if (collectionOptionNames) {
-  collectionOptionNames['loading-template'] = 'loadingTemplate';
-  collectionOptionNames['loading-view'] = 'loadingView';
-  collectionOptionNames['loading-placement'] = 'loadingPlacement';
+if (Thorax.CollectionHelperView) {
+  _.extend(Thorax.CollectionHelperView.attributeWhiteList, {
+    'loading-template': 'loadingTemplate',
+    'loading-view': 'loadingView',
+    'loading-placement': 'loadingPlacement'
+  });
 }
 
 Thorax.View.on({
@@ -2806,7 +2937,7 @@ Thorax.Util.scrollTo = function(x, y) {
 };
 
 Thorax.LayoutView.on('change:view:end', function(newView, oldView, options) {
-  options.scroll && Thorax.Util.scrollTo(0, 0);
+  options && options.scroll && Thorax.Util.scrollTo(0, 0);
 });
 
 Thorax.Util.scrollToTop = function() {
@@ -2918,7 +3049,7 @@ function fixupTapHighlight() {
     if (components[0] === 'click') {
       // !selector case is for root click handlers on the view, i.e. 'click'
       $(selector || this.el, selector && this.el).forEach(function(el) {
-        var $el = $(el).data('tappable', true);
+        var $el = $(el).attr('data-tappable', true);
 
         if (useNativeHighlight && !NATIVE_TAPPABLE[el.tagName]) {
           // Add an explicit NOP bind to allow tap-highlight support
