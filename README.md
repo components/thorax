@@ -5,5 +5,3 @@ An opinionated, battle tested [Backbone](http://backbonejs.org/) + [Handlebars](
 
 This repo contains the compiled JavaScript files for distribution and installation via Bower. For the main repo visit:
 http://github.com/walmartlabs/thorax
-
-Current version: 2.0.0rc10
