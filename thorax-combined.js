@@ -14680,7 +14680,6 @@ if (!Handlebars.templates) {
 }
 
 var Thorax = this.Thorax = {
-  VERSION: '2.0.0rc8',
   templatePathPrefix: '',
   //view classes
   Views: {},
@@ -14787,7 +14786,8 @@ Thorax.View = Backbone.View.extend({
 
     if (this.el) {
       this.undelegateEvents();
-      this.remove(); // Will call stopListening()
+      this.remove();  // Will call stopListening()
+      this.off();     // Kills off remaining events
     }
 
     // Absolute worst case scenario, kill off some known fields to minimize the impact
@@ -14929,8 +14929,12 @@ Thorax.View = Backbone.View.extend({
     }
   },
 
-  retain: function() {
+  retain: function(owner) {
     ++this._referenceCount;
+    if (owner) {
+      // Not using listenTo helper as we want to run once the owner is destroyed
+      this.listenTo(owner, 'destroyed', owner.release);
+    }
   },
 
   _replaceHTML: function(html) {
@@ -14995,7 +14999,7 @@ $.fn.view = function(options) {
 ;;
 /*global createRegistryWrapper:true, cloneEvents: true */
 function createErrorMessage(code) {
-  return 'Error "' + code + '". For more information visit http://thoraxjs.org/error-codes' + '#' + code;
+  return 'Error "start' + code + '". For more information visit http://thoraxjs.org/error-codes.html' + '#' + code;
 }
 
 function createRegistryWrapper(klass, hash) {
@@ -15159,7 +15163,8 @@ function listenTo(object, target, eventName, callback, context) {
       destroyedCount++;
     }
   }
-  eventHandler._callback = callbackMethod;
+  eventHandler._callback = callbackMethod._callback || callbackMethod;
+  eventHandler._thoraxBind = true;
   object.listenTo(target, eventName, eventHandler);
 }
 
@@ -15335,7 +15340,7 @@ Thorax.View.prototype.mixin = function(name) {
 };
 
 ;;
-/*global createInheritVars, inheritVars, objectEvents, walkInheritTree */
+/*global createInheritVars, inheritVars, listenTo, objectEvents, walkInheritTree */
 // Save a copy of the _on method to call as a $super method
 var _on = Thorax.View.prototype.on;
 
@@ -15397,7 +15402,7 @@ _.extend(Thorax.View.prototype, {
       //accept on("click a", callback, context)
       _.each((_.isArray(callback) ? callback : [callback]), function(callback) {
         var params = eventParamsFromEventItem.call(this, eventName, callback, context || this);
-        if (params.type === 'DOM' && !this.$el) {
+        if (params.type === 'DOM' && !this._eventsDelegated) {
           //will call _addEvent during delegateEvents()
           if (!this._eventsToDelegate) {
             this._eventsToDelegate = [];
@@ -15420,6 +15425,7 @@ _.extend(Thorax.View.prototype, {
       this.on(events);
     }
     this._eventsToDelegate && _.each(this._eventsToDelegate, this._addEvent, this);
+    this._eventsDelegated = true;
   },
   //params may contain:
   //- name
@@ -15428,13 +15434,22 @@ _.extend(Thorax.View.prototype, {
   //- type "view" || "DOM"
   //- handler
   _addEvent: function(params) {
+    // If this is recursvie due to listenTo delegate below then pass through to super class
+    if (params.handler._thoraxBind) {
+      return _on.call(this, params.name, params.handler, params.context || this);
+    }
+
+    var boundHandler = bindEventHandler.call(this, params.type + '-event:', params);
+
     if (params.type === 'view') {
-      _.each(params.name.split(/\s+/), function(name) {
-        // Must pass context here so stopListening will clean up our junk
-        _on.call(this, name, bindEventHandler.call(this, 'view-event:', params), params.context || this);
-      }, this);
+      // If we have our context set to an outside view then listen rather than directly bind so
+      // we can cleanup properly.
+      if (params.context && params.context !== this && params.context instanceof Thorax.View) {
+        listenTo(params.context, this, params.name, boundHandler, params.context);
+      } else {
+        _on.call(this, params.name, boundHandler, params.context || this);
+      }
     } else {
-      var boundHandler = bindEventHandler.call(this, 'dom-event:', params);
       if (!params.nested) {
         boundHandler = containHandlerToCurentView(boundHandler, this.cid);
       }
@@ -15448,6 +15463,8 @@ _.extend(Thorax.View.prototype, {
     }
   }
 });
+
+Thorax.View.prototype.bind = Thorax.View.prototype.on;
 
 // When view is ready trigger ready event on all
 // children that are present, then register an
@@ -15511,6 +15528,7 @@ function bindEventHandler(eventName, params) {
   // Backbone will delegate to _callback in off calls so we should still be able to support
   // calling off on specific handlers.
   ret._callback = method;
+  ret._thoraxBind = true;
   return ret;
 }
 
@@ -16098,11 +16116,14 @@ Thorax.CollectionView = Thorax.View.extend({
       if (_.isString(itemView) && !itemView.match(/^\s*</m)) {
         itemView = '<div>' + itemView + '</div>';
       }
-      var itemElement = itemView.$el ? itemView.$el : _.filter($($.trim(itemView)), function(node) {
+      var itemElement = itemView.$el || $($.trim(itemView)).filter(function() {
         //filter out top level whitespace nodes
-        return node.nodeType === ELEMENT_NODE_TYPE;
+        return this.nodeType === ELEMENT_NODE_TYPE;
       });
-      model && $(itemElement).attr(modelCidAttributeName, model.cid);
+
+      if (model) {
+        itemElement.attr(modelCidAttributeName, model.cid);
+      }
       var previousModel = index > 0 ? this.collection.at(index - 1) : false;
       if (!previousModel) {
         $el.prepend(itemElement);
@@ -16116,8 +16137,12 @@ Thorax.CollectionView = Thorax.View.extend({
         el.setAttribute(modelCidAttributeName, model.cid);
       });
 
-      !options.silent && this.trigger('rendered:item', this, this.collection, model, itemElement, index);
-      options.filter && applyItemVisiblityFilter.call(this, model);
+      if (!options.silent) {
+        this.trigger('rendered:item', this, this.collection, model, itemElement, index);
+      }
+      if (options.filter) {
+        applyItemVisiblityFilter.call(this, model);
+      }
     }
     return itemView;
   },
@@ -17137,8 +17162,13 @@ Thorax.loadHandler = function(start, end, context) {
         self._loadingTimeoutDuration : Thorax.View.prototype._loadingTimeoutDuration;
       loadInfo.timeout = setTimeout(function() {
           try {
-            loadInfo.run = true;
-            start.call(self, loadInfo.message, loadInfo.background, loadInfo);
+            // We have a slight race condtion in here where the end event may have occurred
+            // but the end timeout has not executed. Rather than killing a cumulative timeout
+            // immediately we'll protect from that case here
+            if (loadInfo.events.length) {
+              loadInfo.run = true;
+              start.call(self, loadInfo.message, loadInfo.background, loadInfo);
+            }
           } catch (e) {
             Thorax.onException('loadStart', e);
           }
