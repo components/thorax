@@ -5117,7 +5117,7 @@ $.fn.view = function(options) {
 ;;
 /*global createRegistryWrapper:true, cloneEvents: true */
 function createErrorMessage(code) {
-  return 'Error "start' + code + '". For more information visit http://thoraxjs.org/error-codes.html' + '#' + code;
+  return 'Error "' + code + '". For more information visit http://thoraxjs.org/error-codes.html' + '#' + code;
 }
 
 function createRegistryWrapper(klass, hash) {
@@ -6113,7 +6113,7 @@ $.fn.model = function(view) {
 ;;
 /*global assignView, assignTemplate, createRegistryWrapper, dataObject, getEventCallback, getValue, modelCidAttributeName, viewCidAttributeName */
 var _fetch = Backbone.Collection.prototype.fetch,
-    _reset = Backbone.Collection.prototype.reset,
+    _set = Backbone.Collection.prototype.set,
     _replaceHTML = Thorax.View.prototype._replaceHTML,
     collectionCidAttributeName = 'data-collection-cid',
     collectionEmptyAttributeName = 'data-collection-empty',
@@ -6148,9 +6148,9 @@ Thorax.Collection = Backbone.Collection.extend({
     };
     return _fetch.apply(this, arguments);
   },
-  reset: function(models, options) {
+  set: function(models, options) {
     this._fetched = !!models;
-    return _reset.call(this, models, options);
+    return _set.call(this, models, options);
   }
 });
 
@@ -6164,7 +6164,8 @@ dataObject('collection', {
     render: undefined,    // Default to deferred rendering
     fetch: true,
     success: false,
-    invalid: true
+    invalid: true,
+    change: true          // Wether or not to re-render on model:change
   },
   change: onCollectionReset,
   $el: 'getCollectionElement',
@@ -6392,7 +6393,10 @@ Thorax.CollectionView.on({
       applyVisibilityFilter.call(this);
     },
     change: function(model) {
-      this.updateItem(model);
+      var options = this.getObjectOptions(this.collection) || undefined;
+      if (options && options.change) {
+        this.updateItem(model);
+      }
       applyItemVisiblityFilter.call(this, model);
     },
     add: function(model) {
@@ -6647,7 +6651,7 @@ _.extend(Thorax.View.prototype, {
   _getInputValue: function(input /* , options, errors */) {
     if (input.type === 'checkbox' || input.type === 'radio') {
       if (input.checked) {
-        return input.value;
+        return input.getAttribute('value') || true;
       }
     } else if (input.multiple === true) {
       var values = [];
@@ -6729,7 +6733,7 @@ function onErrorOrInvalidData () {
 function eachNamedInput(view, options, iterator) {
   var i = 0;
 
-  view.$('select,input,textarea', options.root || view.el).each(function() {
+  $('select,input,textarea', options.root || view.el).each(function() {
     if (!options.children) {
       if (view !== $(this).view({helper: false})) {
         return;
@@ -6811,6 +6815,8 @@ Thorax.LayoutView = Thorax.View.extend({
     }
 
     if (view) {
+      view.ensureRendered();
+
       triggerLifecycleEvent.call(this, 'activated', options);
       view.trigger('activated', options);
       this._view = view;
@@ -7349,7 +7355,7 @@ Thorax.loadHandler = function(start, end, context) {
             if (!events.length) {
               if (loadInfo.run) {
                 // Emit the end behavior, but only if there is a paired start
-                end.call(self, loadInfo.background, loadInfo);
+                end && end.call(self, loadInfo.background, loadInfo);
                 loadInfo.trigger(loadEnd, loadInfo);
               }
 
