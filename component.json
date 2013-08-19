@@ -1,5 +1,6 @@
 {
   "name": "thorax",
+  "version": "2.0.0",
   "repo": "components/thorax",
   "main": "thorax.js",
   "scripts": [
