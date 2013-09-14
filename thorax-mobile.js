@@ -1402,6 +1402,21 @@ Thorax.Collection = Backbone.Collection.extend({
   }
 });
 
+_.extend(Thorax.View.prototype, {
+  getCollectionViews: function(collection) {
+    return _.filter(this.children, function(child) {
+      if (!(child instanceof Thorax.CollectionView)) {
+        return false;
+      }
+
+      return !collection || (child.collection === collection);
+    });
+  },
+  updateFilter: function(collection) {
+    _.invoke(this.getCollectionViews(collection), 'updateFilter');
+  }
+});
+
 Thorax.Collections = {};
 createRegistryWrapper(Thorax.Collection, Thorax.Collections);
 
@@ -1630,6 +1645,10 @@ Thorax.CollectionView = Thorax.View.extend({
   getCollectionElement: function() {
     var element = this.$(this._collectionSelector);
     return element.length === 0 ? this.$el : element;
+  },
+
+  updateFilter: function() {
+    applyVisibilityFilter.call(this);
   }
 });
 
@@ -1637,11 +1656,8 @@ Thorax.CollectionView.on({
   collection: {
     reset: onCollectionReset,
     sort: onCollectionReset,
-    filter: function() {
-      applyVisibilityFilter.call(this);
-    },
     change: function(model) {
-      var options = this.getObjectOptions(this.collection) || undefined;
+      var options = this.getObjectOptions(this.collection);
       if (options && options.change) {
         this.updateItem(model);
       }
@@ -2050,31 +2066,46 @@ Thorax.LayoutView = Thorax.View.extend({
       view = new (Thorax.Util.registryGet(Thorax, 'Views', view, false))();
     }
     this.ensureRendered();
-    var oldView = this._view;
+    var oldView = this._view, append, remove, complete;
     if (view === oldView) {
       return false;
     }
-
     this.trigger('change:view:start', view, oldView, options);
-    if (oldView) {
-      oldView.$el.remove();
-      triggerLifecycleEvent.call(oldView, 'deactivated', options);
-      this._removeChild(oldView);
-    }
+    
+    remove = _.bind(function() {
+      if (oldView) {
+        oldView.$el.remove();
+        triggerLifecycleEvent.call(oldView, 'deactivated', options);
+        this._removeChild(oldView);
+      }
+    }, this);
 
-    if (view) {
-      view.ensureRendered();
+    append = _.bind(function() {
+      if (view) {
+        view.ensureRendered();
+        triggerLifecycleEvent.call(this, 'activated', options);
+        view.trigger('activated', options);
+        this._view = view;
+        var targetElement = getLayoutViewsTargetElement.call(this);
+        this._view.appendTo(targetElement);
+        this._addChild(view);
+      } else {
+        this._view = undefined;
+      }
+    }, this);
 
-      triggerLifecycleEvent.call(this, 'activated', options);
-      view.trigger('activated', options);
-      this._view = view;
-      this._view.appendTo(getLayoutViewsTargetElement.call(this));
-      this._addChild(view);
+    complete = _.bind(function() {
+      this.trigger('change:view:end', view, oldView, options);
+    }, this);
+
+    if (!options.transition) {
+      remove();
+      append();
+      complete();
     } else {
-      this._view = undefined;
+      options.transition(view, oldView, append, remove, complete);
     }
 
-    this.trigger('change:view:end', view, oldView, options);
     return view;
   },
 
@@ -2702,7 +2733,7 @@ Thorax.mixinLoadableEvents = function(target, useParent) {
       that.trigger(loadStart, message, background, that);
     },
     loadEnd: function() {
-      this._loadCount--
+      this._loadCount--;
 
       var that = useParent ? this.parent : this;
       that.trigger(loadEnd, that);
@@ -2875,14 +2906,22 @@ _.each(klasses, function(DataClass) {
         }
       }
 
-      var self = this,
-          complete = options.complete;
+      if (!options.loadTriggered) {
+        var self = this;
 
-      options.complete = function() {
-        complete && complete.apply(this, arguments);
-        self.loadEnd();
-      };
-      self.loadStart(undefined, options.background);
+        function endWrapper(method) {
+          var $super = options[method];
+          options[method] = function() {
+            self.loadEnd();
+            $super && $super.apply(this, arguments);
+          };
+        }
+
+        endWrapper('success');
+        endWrapper('error');
+        self.loadStart(undefined, options.background);
+      }
+
       return fetchQueue.call(this, options || {}, $fetch);
     },
 
@@ -2896,7 +2935,12 @@ _.each(klasses, function(DataClass) {
       if (!options.background && !this.isPopulated() && rootObject) {
         // Make sure that the global scope sees the proper load events here
         // if we are loading in standalone mode
-        Thorax.forwardLoadEvents(this, rootObject, true);
+        if (this.isLoading()) {
+          // trigger directly because load:start has already been triggered
+          rootObject.trigger(loadStart, options.message, options.background, this);
+        } else {
+          Thorax.forwardLoadEvents(this, rootObject, true);
+        }
       }
 
       loadData.call(this, callback, failback, options);
