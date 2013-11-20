@@ -15678,6 +15678,10 @@ Handlebars.registerViewHelper = function(name, ViewClass, callback) {
       } else {
         instance = new ViewClass(viewOptions);
       }
+      if (!instance.el) {
+        // ViewClass.factory may return existing objects which may have been destroyed
+        throw new Error('insert-destroyed-factory');
+      }
 
       // Remove any possible entry in previous helpers in case this is a cached value returned from
       // slightly different data that does not qualify for the previous helpers direct reuse.
@@ -15691,6 +15695,10 @@ Handlebars.registerViewHelper = function(name, ViewClass, callback) {
 
       callback && callback.apply(this, args);
     } else {
+      if (!instance.el) {
+        throw new Error('insert-destroyed');
+      }
+
       declaringView._previousHelpers = _.without(declaringView._previousHelpers, instance);
       declaringView.children[instance.cid] = instance;
     }
