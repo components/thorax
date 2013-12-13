@@ -63,7 +63,10 @@ var Thorax = this.Thorax = {
 
 Thorax.View = Backbone.View.extend({
   constructor: function() {
+    // store first argument for configureView()
+    this._constructorArg = arguments[0];
     var response = Backbone.View.apply(this, arguments);
+    delete this._constructorArg;
     _.each(inheritVars, function(obj) {
       if (obj.ctor) {
         obj.ctor.call(this, response);
@@ -71,37 +74,9 @@ Thorax.View = Backbone.View.extend({
     }, this);
     return response;
   },
-  _configure: function(options) {
-    var self = this;
 
-    this._referenceCount = 0;
-
-    this._objectOptionsByCid = {};
-    this._boundDataObjectsByCid = {};
-
-    // Setup object event tracking
-    _.each(inheritVars, function(obj) {
-      self[obj.name] = [];
-    });
-
-    viewsIndexedByCid[this.cid] = this;
-    this.children = {};
-    this._renderCount = 0;
-
-    //this.options is removed in Thorax.View, we merge passed
-    //properties directly with the view and template context
-    _.extend(this, options || {});
-
-    // Setup helpers
-    bindHelpers.call(this);
-
-    _.each(inheritVars, function(obj) {
-      if (obj.configure) {
-        obj.configure.call(this);
-      }
-    }, this);
-
-    this.trigger('configure');
+  toString: function() {
+    return '[object View.' + this.name + ']';
   },
 
   setElement : function() {
@@ -339,6 +314,55 @@ Thorax.View.extend = function() {
 };
 
 createRegistryWrapper(Thorax.View, Thorax.Views);
+
+// View configuration, _configure was removed
+// in Backbone 1.1, written for Backwards
+// compatibility
+
+function configureView () {
+  var options = this._constructorArg;
+  var self = this;
+
+  this._referenceCount = 0;
+
+  this._objectOptionsByCid = {};
+  this._boundDataObjectsByCid = {};
+
+  // Setup object event tracking
+  _.each(inheritVars, function(obj) {
+    self[obj.name] = [];
+  });
+
+  viewsIndexedByCid[this.cid] = this;
+  this.children = {};
+  this._renderCount = 0;
+
+  //this.options is removed in Thorax.View, we merge passed
+  //properties directly with the view and template context
+  _.extend(this, options || {});
+
+  // Setup helpers
+  bindHelpers.call(this);
+
+  _.each(inheritVars, function(obj) {
+    if (obj.configure) {
+      obj.configure.call(this);
+    }
+  }, this);
+
+  this.trigger('configure');
+}
+
+if (Backbone.View.prototype._configure) {
+  // < Backbone 1.1
+  Thorax.View.prototype._configure = configureView;
+} else {
+  // >= Backbone 1.1
+  Thorax.View.prototype._ensureElement = function() {
+    configureView.call(this);
+    return Backbone.View.prototype._ensureElement.call(this);
+  }
+}
 
 function bindHelpers() {
   if (this.helpers) {
@@ -874,7 +898,7 @@ function containHandlerToCurentView(handler, cid) {
     var view = $(event.target).view({helper: false});
     if (view && view.cid === cid) {
       event.originalContext = this;
-      handler(event);
+      return handler(event);
     }
   };
 }
@@ -891,7 +915,7 @@ function bindEventHandler(eventName, params) {
   var context = params.context || this;
   function ret() {
     try {
-      method.apply(context, arguments);
+      return method.apply(context, arguments);
     } catch (e) {
       Thorax.onException('thorax-exception: ' + (context.name || context.cid) + ':' + eventName, e);
     }
@@ -1571,12 +1595,21 @@ Thorax.CollectionView = Thorax.View.extend({
     if (!viewEl.length) {
       return false;
     }
+
+    var viewCids = viewEl.find('[' + viewCidAttributeName + ']').map(function(i, el) {
+      return $(el).attr(viewCidAttributeName);
+    });
+
     viewEl.remove();
-    var viewCid = viewEl.attr(viewCidAttributeName),
-        child = this.children[viewCid];
-    if (child) {
-      this._removeChild(child);
-    }
+
+    viewCids.push(viewEl.attr(viewCidAttributeName));
+    _.each(viewCids, function(cid) {
+      var child = this.children[cid];
+      if (child) {
+        this._removeChild(child);
+      }
+    }, this);
+
     return true;
   },
 
