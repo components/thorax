@@ -75,6 +75,15 @@ Thorax.View = Backbone.View.extend({
     return response;
   },
 
+  // View configuration, _configure was removed
+  // in Backbone 1.1, define _configure as a noop
+  // for Backwards compatibility with 1.0 and earlier
+  _configure: function() {},
+  _ensureElement: function () {
+    configureView.call(this);
+    return Backbone.View.prototype._ensureElement.call(this);
+  },
+
   toString: function() {
     return '[object View.' + this.name + ']';
   },
@@ -315,10 +324,6 @@ Thorax.View.extend = function() {
 
 createRegistryWrapper(Thorax.View, Thorax.Views);
 
-// View configuration, _configure was removed
-// in Backbone 1.1, written for Backwards
-// compatibility
-
 function configureView () {
   var options = this._constructorArg;
   var self = this;
@@ -351,17 +356,6 @@ function configureView () {
   }, this);
 
   this.trigger('configure');
-}
-
-if (Backbone.View.prototype._configure) {
-  // < Backbone 1.1
-  Thorax.View.prototype._configure = configureView;
-} else {
-  // >= Backbone 1.1
-  Thorax.View.prototype._ensureElement = function() {
-    configureView.call(this);
-    return Backbone.View.prototype._ensureElement.call(this);
-  }
 }
 
 function bindHelpers() {
@@ -889,7 +883,7 @@ pushDomEvents([
   'touchstart', 'touchend', 'touchmove',
   'click', 'dblclick',
   'keyup', 'keydown', 'keypress',
-  'submit', 'change',
+  'submit', 'change', 'input',
   'focus', 'blur'
 ]);
 
@@ -1513,7 +1507,8 @@ Thorax.CollectionView = Thorax.View.extend({
       return;
     }
     var itemView,
-        $el = this.getCollectionElement();
+        $el = this.getCollectionElement(),
+        collection = this.collection;
     options = _.defaults(options || {}, {
       filter: true
     });
@@ -1524,7 +1519,7 @@ Thorax.CollectionView = Thorax.View.extend({
       itemView = model;
       model = false;
     } else {
-      index = index || this.collection.indexOf(model) || 0;
+      index = index || collection.indexOf(model) || 0;
       itemView = this.renderItem(model, index);
     }
 
@@ -1548,7 +1543,7 @@ Thorax.CollectionView = Thorax.View.extend({
       if (model) {
         itemElement.attr(modelCidAttributeName, model.cid);
       }
-      var previousModel = index > 0 ? this.collection.at(index - 1) : false;
+      var previousModel = index > 0 ? collection.at(index - 1) : false;
       if (!previousModel) {
         $el.prepend(itemElement);
       } else {
@@ -1562,7 +1557,7 @@ Thorax.CollectionView = Thorax.View.extend({
       });
 
       if (!options.silent) {
-        this.trigger('rendered:item', this, this.collection, model, itemElement, index);
+        this.trigger('rendered:item', this, collection, model, itemElement, index);
       }
       if (options.filter) {
         applyItemVisiblityFilter.call(this, model);
@@ -1716,8 +1711,11 @@ Thorax.CollectionView.on({
     },
     add: function(model) {
       var $el = this.getCollectionElement();
-      this.collection.length === 1 && $el.length && handleChangeFromEmptyToNotEmpty.call(this);
       if ($el.length) {
+        if (this.collection.length === 1) {
+          handleChangeFromEmptyToNotEmpty.call(this);
+        }
+
         var index = this.collection.indexOf(model);
         this.appendItem(model, index);
       }
@@ -2410,6 +2408,8 @@ Handlebars.registerHelper('yield', function(options) {
 
 ;;
 Handlebars.registerHelper('url', function(url) {
+  url = url || '';
+
   var fragment;
   if (arguments.length > 2) {
     fragment = _.map(_.head(arguments, arguments.length - 1), encodeURIComponent).join('/');
@@ -3144,4 +3144,4 @@ if (isIE) {
 
 })();
 
-//@ sourceMappingURL=thorax.js.map
+
