@@ -12,8 +12,8 @@ The Thorax component no longer includes dependencies due to possible versioning 
     "devDependencies": {
       "jquery": "1.9.0",
       "underscore": "1.4.4",
-      "zepto": "1.0.0",
-      "handlebars": "1.0.0",
+      "zepto": "1.1.2",
+      "handlebars": "2.x",
       "backbone": "1.1.0"
     }
 
